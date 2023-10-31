@@ -11,6 +11,10 @@ declare namespace axe {
 
   type RunOnlyType = 'rule' | 'rules' | 'tag' | 'tags';
 
+  type CheckType = 'any' | 'all' | 'none';
+
+  type ResultType = 'passed' | 'failed' | 'incomplete';
+
   type resultGroups = 'inapplicable' | 'passes' | 'incomplete' | 'violations';
 
   type AriaAttrsType =
@@ -212,6 +216,7 @@ declare namespace axe {
     allowEmpty?: boolean;
     global?: boolean;
     unsupported?: boolean;
+    minValue?: number;
   }
   interface AriaRoles {
     type: AriaRolesType | DpubRolesType;
@@ -221,16 +226,24 @@ declare namespace axe {
     allowedAttrs?: string[];
     nameFromContent?: boolean;
     unsupported?: boolean;
+    superclassRole?: string[];
+    accessibleNameRequired?: boolean;
+    childrenPresentational?: true;
+    prohibitedAttrs?: string[];
+    deprecated?: boolean;
   }
   interface HtmlElmsVariant {
+    matches?: string;
     contentTypes?: HtmlContentTypes[];
-    allowedRoles: boolean | string[];
+    allowedRoles?: boolean | string[];
     noAriaAttrs?: boolean;
     shadowRoot?: boolean;
     implicitAttrs?: { [key: string]: string };
     namingMethods?: string[];
+    chromiumRole?: string;
   }
-  interface HtmlElms extends HtmlElmsVariant {
+  interface HtmlElms extends Omit<HtmlElmsVariant, 'matches'> {
+    allowedRoles: boolean | string[];
     variant?: { [key: string]: HtmlElmsVariant };
   }
   interface Standards {
@@ -268,9 +281,9 @@ declare namespace axe {
   interface AfterResult {
     id: string;
     data?: unknown;
-    relatedNodes: SerialDqElement[];
+    relatedNodes: DqElement[];
     result: boolean | undefined;
-    node: SerialDqElement;
+    node: DqElement;
   }
   interface Check {
     id: string;
@@ -280,13 +293,12 @@ declare namespace axe {
           this: CheckHelper,
           node: Element,
           options: unknown,
-          virtualNode: VirtualNode
+          virtualNode: AbstractVirtualNode
         ) => boolean | undefined | void);
     after?:
       | string
       | ((results: AfterResult[], options: unknown) => AfterResult[]);
     options?: any;
-    matches?: string;
     enabled?: boolean;
     metadata?: {
       impact?: ImpactValue;
@@ -300,15 +312,38 @@ declare namespace axe {
     excludeHidden?: boolean;
     enabled?: boolean;
     pageLevel?: boolean;
+    preload?: boolean;
     any?: string[];
     all?: string[];
     none?: string[];
     tags?: string[];
-    matches?: string | ((node: Element, virtualNode: VirtualNode) => boolean);
+    matches?:
+      | string
+      | ((
+          node: Element,
+          virtualNode: AbstractVirtualNode,
+          context: ContextObject
+        ) => boolean);
     reviewOnFail?: boolean;
     actIds?: string[];
     metadata?: Omit<RuleMetadata, 'ruleId' | 'tags' | 'actIds'>;
   }
+
+  interface CheckResults {
+    type: string;
+    results: CheckResult[];
+  }
+
+  interface AxeRule extends Rule {
+    after: (result: RawResult, options: unknown) => RawResult;
+    runChecksSync: (
+      type: string,
+      node: AbstractVirtualNode,
+      options: unknown,
+      context: ContextObject
+    ) => CheckResults;
+  }
+
   interface AxePlugin {
     id: string;
     run(...args: any[]): any;
@@ -333,6 +368,10 @@ declare namespace axe {
     xpath: string[];
     ancestry: UnlabelledFrameSelector;
   }
+  interface DqElement extends SerialDqElement {
+    toJSON(): SerialDqElement;
+    element: Element;
+  }
   interface PartialRuleResult {
     id: string;
     result: 'inapplicable';
@@ -351,7 +390,7 @@ declare namespace axe {
     frameContext: FrameContextObject;
   }
 
-  interface RawNodeResult<T extends 'passed' | 'failed' | 'incomplete'> {
+  interface RawNodeResult<T extends ResultType> {
     any: CheckResult[];
     all: CheckResult[];
     none: CheckResult[];
@@ -365,7 +404,7 @@ declare namespace axe {
     incomplete: RawNodeResult<'incomplete'>[];
     violations: RawNodeResult<'failed'>[];
     pageLevel: boolean;
-    result: 'failed' | 'passed' | 'incomplete' | 'inapplicable';
+    result: ResultType | 'inapplicable';
   }
 
   type AxeReporter<T = unknown> = (
@@ -375,15 +414,54 @@ declare namespace axe {
     reject: (error: Error) => void
   ) => void;
 
-  interface VirtualNode {
+  class AbstractVirtualNode {
+    constructor();
+    parent: AbstractVirtualNode | undefined | null;
+    children: AbstractVirtualNode[] | undefined;
+
+    attr(attrName: string): string | null;
+    hasAttr(attrName: string): boolean;
+
+    get attrNames(): string;
+    get props(): {
+      nodeType: number;
+      nodeName: string;
+      id: string;
+      type?: string;
+      multiple?: boolean;
+      nodeValue?: string;
+      value?: string;
+      selected?: boolean;
+      checked?: boolean;
+      indeterminate?: string;
+    };
+  }
+
+  type SerialNodeConfig = {
+    nodeName: string;
+    nodeType?: number;
+    nodeValue?: string;
+    attributes: {
+      [name: string]: string;
+    };
+  };
+  class SerialVirtualNode extends AbstractVirtualNode {
+    constructor(config: SerialNodeConfig);
+  }
+
+  class VirtualNode extends AbstractVirtualNode {
+    constructor(node: Element, parent?: null | Element, shadowId?: string);
+    nodeIndex: number;
     actualNode?: Node;
     shadowId?: string;
-    children?: VirtualNode[];
-    parent?: VirtualNode;
-    attr(attr: string): string | null;
-    hasAttr(attr: string): boolean;
-    props: { [key: string]: unknown };
+    getComputedStylePropertyValue(property: string): string;
+    isFocusable: boolean;
+    tabbableElements: boolean;
+    clientRects: DOMRect[];
+    boundingClientRect: DOMRect;
   }
+
+  type ElementLike = Element | AbstractVirtualNode;
 
   interface Utils {
     getFrameContexts: (
@@ -396,21 +474,31 @@ declare namespace axe {
     DqElement: new (
       elm: Element,
       options?: { absolutePaths?: boolean }
-    ) => SerialDqElement;
+    ) => DqElement;
     uuid: (
       options?: { random?: Uint8Array | Array<number> },
       buf?: Uint8Array | Array<number>,
       offset?: number
     ) => string | Uint8Array | Array<number>;
+    publishMetaData(rawResult: RawResult): void;
+    finalizeRuleResult(rawResult: RawResult): void;
+    aggregateResult(rawResults: RawResult[]): AxeResults;
+    getRule(ruleId: string): AxeRule;
+    getCheckOption<T = unknown>(
+      check: Check,
+      ruleId: string,
+      runOptions: RunOptions
+    ): { options: T };
   }
 
   interface Aria {
-    getRoleType: (role: string | Element | VirtualNode | null) => string | null;
+    getRoleType: (role: string | ElementLike | null) => string | null;
   }
 
   interface Dom {
-    isFocusable: (node: Element | VirtualNode) => boolean;
-    isNativelyFocusable: (node: Element | VirtualNode) => boolean;
+    isFocusable: (node: ElementLike) => boolean;
+    isNativelyFocusable: (node: ElementLike) => boolean;
+    isVisibleToScreenReaders(node: ElementLike): boolean;
   }
 
   type AccessibleTextOptions = {
@@ -423,12 +511,53 @@ declare namespace axe {
       element: Element,
       options?: AccessibleTextOptions
     ) => string;
+    sanitize(text: string): string;
+  }
+
+  class Color {
+    constructor(red: number, green: number, blue: number, alpha?: number);
+    red: number;
+    green: number;
+    blue: number;
+    alpha: number;
+
+    toHexString(): string;
+    toJSON(): {
+      red: number;
+      green: number;
+      blue: number;
+      alpha: number;
+    };
+    parseString(colorString: string): this;
+    parseRgbString(colorString: string): void;
+    parseHexString(colorString: string): void;
+    parseColorFnString(colorString: string): void;
+    getRelativeLuminance(): number;
+  }
+
+  interface Color {
+    Color: new (
+      red: number,
+      green: number,
+      blue: number,
+      alpha?: number
+    ) => Color;
+    getContrast: (bgColor: Color, fgColor: Color) => number;
   }
 
   interface Commons {
     aria: Aria;
     dom: Dom;
     text: Text;
+    color: Color;
+    matches: (node: ElementLike, definition: any) => boolean;
+  }
+
+  interface Constants {
+    NA: 'inapplicable';
+    PASS: 'passed';
+    CANTTELL: 'cantTell';
+    FAIL: 'failed';
   }
 
   interface EnvironmentData {
@@ -443,6 +572,7 @@ declare namespace axe {
   let plugins: any;
   let utils: Utils;
   let commons: Commons;
+  let constants: Constants;
 
   /**
    * Source string to use as an injected script in Selenium
